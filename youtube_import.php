@@ -1,6 +1,14 @@
 <?php
 require_once __DIR__ . '/config.php';
 
+// 互換用: 古い変数名($youtube_api_key / $youtube_channel_id)にも対応する
+if (!isset($youtubeApiKey) && isset($youtube_api_key)) {
+    $youtubeApiKey = $youtube_api_key;
+}
+if (!isset($youtubeChannelId) && isset($youtube_channel_id)) {
+    $youtubeChannelId = $youtube_channel_id;
+}
+
 /**
  * YouTube Data API から JSON を取得するヘルパー
  */
@@ -225,17 +233,17 @@ do {
                 ";
                 $stmt = $pdo->prepare($sql);
                 $stmt->execute([
-                    ':title'           => $title,
-                    ':description'     => $description,
-                    ':view_count'      => $viewCount,
-                    ':like_count'      => $likeCount,
-                    ':comment_count'   => $commentCount,
-                    ':duration_seconds'=> $durationSeconds,
-                    ':video_type'      => $videoType,
-                    ':published_at'    => $publishedAt,
-                    ':tags'            => $tags,
-                    ':thumb'           => $thumb,
-                    ':vid'             => $videoId,
+                    ':title'            => $title,
+                    ':description'      => $description,
+                    ':view_count'       => $viewCount,
+                    ':like_count'       => $likeCount,
+                    ':comment_count'    => $commentCount,
+                    ':duration_seconds' => $durationSeconds,
+                    ':video_type'       => $videoType,
+                    ':published_at'     => $publishedAt,
+                    ':tags'             => $tags,
+                    ':thumb'            => $thumb,
+                    ':vid'              => $videoId,
                 ]);
                 $totalUpdated++;
             } else {
