@@ -22,7 +22,7 @@ try {
     require __DIR__ . '/youtube_import.php';
     echo "=== CRON YOUTUBE IMPORT END: " . date('Y-m-d H:i:s') . " ===\n";
 } catch (Throwable $e) {
-    // 致命的でない例外ならここに来る（parse error系は来ない）
+    // 例外が飛んできた場合だけここにくる
     echo "[FATAL ERROR] " . $e->getMessage() . "\n";
 }
 
