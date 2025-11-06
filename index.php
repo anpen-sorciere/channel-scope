@@ -6,7 +6,6 @@ require_once __DIR__ . '/config.php';
 // -------------------------------------
 $range = $_GET['range'] ?? '7d'; // デフォルトは直近7日
 
-// 想定外の値が来たら7dに戻す
 if (!in_array($range, ['7d', '30d', 'all'], true)) {
     $range = '7d';
 }
@@ -20,7 +19,32 @@ if ($range === '7d') {
 $daysInt = $days !== null ? (int)$days : null;
 
 // -------------------------------------
-// 1. サマリー情報取得（全期間）
+// 0-b. 種別フィルタ（all / short / long / live / other / unknown）
+// -------------------------------------
+$videoType = $_GET['type'] ?? 'all';
+$allowedTypes = ['all', 'short', 'long', 'live', 'other', 'unknown'];
+if (!in_array($videoType, $allowedTypes, true)) {
+    $videoType = 'all';
+}
+
+$typeLabelMap = [
+    'all'     => 'すべて',
+    'short'   => 'ショート',
+    'long'    => '通常動画',
+    'live'    => 'ライブ配信',
+    'other'   => 'その他',
+    'unknown' => '不明',
+];
+$videoTypeLabel = $typeLabelMap[$videoType] ?? 'すべて';
+
+// SQL条件に使う種別フィルタ
+$typeConditionSql = '';
+if ($videoType !== 'all') {
+    $typeConditionSql = " AND video_type = " . $pdo->quote($videoType) . " ";
+}
+
+// -------------------------------------
+// 1. サマリー情報取得（全期間）※ここはチャンネル全体で計算
 // -------------------------------------
 $sqlSummary = "
     SELECT 
@@ -41,7 +65,7 @@ $lastPublishedDisplay = $summary['last_published_at']
     : 'データなし';
 
 // -------------------------------------
-// 2. 最新動画一覧（20件・全期間）
+// 2. 最新動画一覧（20件・全期間：タイプ関係なく）
 // -------------------------------------
 $sqlLatest = "
     SELECT 
@@ -52,7 +76,8 @@ $sqlLatest = "
         comment_count,
         published_at,
         tags,
-        thumbnail_url
+        thumbnail_url,
+        video_type
     FROM videos
     ORDER BY published_at DESC
     LIMIT 20
@@ -61,7 +86,7 @@ $stmt = $pdo->query($sqlLatest);
 $latestVideos = $stmt->fetchAll();
 
 // -------------------------------------
-// 2-a. ランキング：再生数TOP10（期間フィルタ反映）
+// 2-a. ランキング：再生数TOP10（期間＋種別フィルタ）
 // -------------------------------------
 $sqlTopViews = "
     SELECT 
@@ -71,10 +96,12 @@ $sqlTopViews = "
         like_count,
         comment_count,
         published_at,
-        thumbnail_url
+        thumbnail_url,
+        video_type
     FROM videos
     WHERE published_at IS NOT NULL
 ";
+$sqlTopViews .= $typeConditionSql;
 if ($daysInt !== null) {
     $sqlTopViews .= " AND published_at >= DATE_SUB(CURDATE(), INTERVAL {$daysInt} DAY) ";
 }
@@ -86,8 +113,7 @@ $stmt = $pdo->query($sqlTopViews);
 $topViewsVideos = $stmt->fetchAll();
 
 // -------------------------------------
-// 2-b. ランキング：伸び率TOP10（期間フィルタ反映）
-// 伸び率 = view_count ÷ 公開からの日数（最低1日で計算）
+// 2-b. ランキング：伸び率TOP10（期間＋種別フィルタ）
 // -------------------------------------
 $sqlTopGrowth = "
     SELECT
@@ -98,11 +124,13 @@ $sqlTopGrowth = "
         comment_count,
         published_at,
         thumbnail_url,
+        video_type,
         GREATEST(DATEDIFF(CURDATE(), published_at), 1) AS days_since,
         (view_count / GREATEST(DATEDIFF(CURDATE(), published_at), 1)) AS growth_score
     FROM videos
     WHERE published_at IS NOT NULL
 ";
+$sqlTopGrowth .= $typeConditionSql;
 if ($daysInt !== null) {
     $sqlTopGrowth .= " AND published_at >= DATE_SUB(CURDATE(), INTERVAL {$daysInt} DAY) ";
 }
@@ -114,7 +142,7 @@ $stmt = $pdo->query($sqlTopGrowth);
 $topGrowthVideos = $stmt->fetchAll();
 
 // -------------------------------------
-// 3. グラフ用データ（日別集計）
+// 3. グラフ用データ（日別集計：期間＋種別）
 // -------------------------------------
 $sqlDaily = "
     SELECT
@@ -124,6 +152,7 @@ $sqlDaily = "
     FROM videos
     WHERE published_at IS NOT NULL
 ";
+$sqlDaily .= $typeConditionSql;
 if ($daysInt !== null) {
     $sqlDaily .= " AND published_at >= DATE_SUB(CURDATE(), INTERVAL {$daysInt} DAY) ";
 }
@@ -139,7 +168,7 @@ $viewSeries = [];
 $likeSeries = [];
 
 foreach ($dailyRows as $row) {
-    $labels[]      = $row['date']; // 'YYYY-MM-DD'
+    $labels[]      = $row['date'];
     $viewSeries[]  = (int)($row['total_views'] ?? 0);
     $likeSeries[]  = (int)($row['total_likes'] ?? 0);
 }
@@ -151,17 +180,18 @@ $chartData = [
 ];
 
 // -------------------------------------
-// 4. 曜日別集計（期間フィルタ反映）
+// 4. 曜日別集計（期間＋種別）
 // -------------------------------------
 $sqlWeekday = "
     SELECT
-        DAYOFWEEK(published_at) AS dow,  -- 1=日曜, 7=土曜
+        DAYOFWEEK(published_at) AS dow,
         COUNT(*) AS video_count,
         AVG(view_count) AS avg_views,
         SUM(view_count) AS total_views
     FROM videos
     WHERE published_at IS NOT NULL
 ";
+$sqlWeekday .= $typeConditionSql;
 if ($daysInt !== null) {
     $sqlWeekday .= " AND published_at >= DATE_SUB(CURDATE(), INTERVAL {$daysInt} DAY) ";
 }
@@ -178,7 +208,7 @@ $weekdayAvgViews = [];
 $weekdayCounts   = [];
 
 foreach ($weekdayRows as $row) {
-    $dowIndex = (int)$row['dow'] - 1; // 1〜7 → 0〜6
+    $dowIndex = (int)$row['dow'] - 1;
     $label = $dowLabels[$dowIndex] ?? ('?(' . $row['dow'] . ')');
     $weekdayLabels[]   = $label;
     $weekdayAvgViews[] = (float)$row['avg_views'];
@@ -192,7 +222,7 @@ $weekdayData = [
 ];
 
 // -------------------------------------
-// 5. 時間帯別集計（期間フィルタ反映）
+// 5. 時間帯別集計（期間＋種別）
 // -------------------------------------
 $sqlTimeBand = "
     SELECT
@@ -208,6 +238,7 @@ $sqlTimeBand = "
     FROM videos
     WHERE published_at IS NOT NULL
 ";
+$sqlTimeBand .= $typeConditionSql;
 if ($daysInt !== null) {
     $sqlTimeBand .= " AND published_at >= DATE_SUB(CURDATE(), INTERVAL {$daysInt} DAY) ";
 }
@@ -238,7 +269,7 @@ $timeBandData = [
 ];
 
 // -------------------------------------
-// 6. 曜日×時間帯ヒートマップ用集計
+// 6. 曜日×時間帯ヒートマップ（期間＋種別）
 // -------------------------------------
 $sqlHeatmap = "
     SELECT
@@ -254,6 +285,7 @@ $sqlHeatmap = "
     FROM videos
     WHERE published_at IS NOT NULL
 ";
+$sqlHeatmap .= $typeConditionSql;
 if ($daysInt !== null) {
     $sqlHeatmap .= " AND published_at >= DATE_SUB(CURDATE(), INTERVAL {$daysInt} DAY) ";
 }
@@ -264,7 +296,6 @@ $sqlHeatmap .= "
 $stmt = $pdo->query($sqlHeatmap);
 $heatmapRows = $stmt->fetchAll();
 
-// ヒートマップ用配列 [dow][band]
 $heatmap = [];
 $heatmapMaxAvg = 0.0;
 
@@ -279,8 +310,8 @@ for ($d = 1; $d <= 7; $d++) {
 }
 
 foreach ($heatmapRows as $row) {
-    $dow  = (int)$row['dow'];     // 1〜7
-    $band = (int)$row['band'];    // 0〜3
+    $dow  = (int)$row['dow'];
+    $band = (int)$row['band'];
     if ($dow < 1 || $dow > 7) continue;
     if ($band < 0 || $band > 3) continue;
 
@@ -296,7 +327,7 @@ foreach ($heatmapRows as $row) {
 }
 
 if ($heatmapMaxAvg <= 0) {
-    $heatmapMaxAvg = 1; // ゼロ除算回避
+    $heatmapMaxAvg = 1;
 }
 
 // 期間内の総動画本数（アドバイス用）
@@ -308,7 +339,7 @@ for ($d = 1; $d <= 7; $d++) {
 }
 
 // -------------------------------------
-// 7. タグ別パフォーマンス集計（期間フィルタ反映）
+// 7. タグ別パフォーマンス（期間＋種別）
 // -------------------------------------
 $sqlTags = "
     SELECT
@@ -319,13 +350,14 @@ $sqlTags = "
       AND tags <> ''
       AND published_at IS NOT NULL
 ";
+$sqlTags .= $typeConditionSql;
 if ($daysInt !== null) {
     $sqlTags .= " AND published_at >= DATE_SUB(CURDATE(), INTERVAL {$daysInt} DAY) ";
 }
 $stmt = $pdo->query($sqlTags);
 $tagRows = $stmt->fetchAll();
 
-$tagStats = []; // tag => ['count' => n, 'total_views' => x]
+$tagStats = [];
 
 foreach ($tagRows as $row) {
     $tagsRaw = $row['tags'] ?? '';
@@ -364,13 +396,14 @@ if (!empty($tagStats)) {
 $bestTag = $topTags[0] ?? null;
 
 // -------------------------------------
-// 8. アドバイス生成
+// 8. アドバイス生成（期間＋種別に基づく）
 // -------------------------------------
 $adviceLines = [];
 
 // 8-1. 一番強い曜日
 $bestWeekdayLabel = null;
 $bestWeekdayAvg   = 0;
+
 if (!empty($weekdayData['labels'])) {
     foreach ($weekdayData['labels'] as $i => $label) {
         $avg   = $weekdayData['avgViews'][$i] ?? 0;
@@ -382,7 +415,7 @@ if (!empty($weekdayData['labels'])) {
         }
     }
     if ($bestWeekdayLabel !== null) {
-        $adviceLines[] = "この期間では<strong>{$bestWeekdayLabel}曜日</strong>に公開した動画が平均再生数で最も強い傾向があります。新作はまず {$bestWeekdayLabel}曜日 の投稿を優先してみましょう。";
+        $adviceLines[] = "この期間・種別では<strong>{$bestWeekdayLabel}曜日</strong>に公開した動画が平均再生数で最も強い傾向があります。新作はまず {$bestWeekdayLabel}曜日 の投稿を優先してみましょう。";
     }
 }
 
@@ -407,11 +440,11 @@ if ($daysInt !== null && $daysInt > 0 && $totalVideosInRange > 0) {
     $perWeek = $totalVideosInRange / $daysInt * 7;
     $perWeekRounded = round($perWeek, 1);
     if ($perWeek < 1) {
-        $adviceLines[] = "この期間の投稿ペースは<strong>週あたり {$perWeekRounded} 本程度</strong>です。まずは週1本以上を目標に、少しずつ本数を増やしていけると分析の精度も上がります。";
+        $adviceLines[] = "この期間・種別の投稿ペースは<strong>週あたり {$perWeekRounded} 本程度</strong>です。まずは週1本以上を目標に、少しずつ本数を増やしていけると分析の精度も上がります。";
     } elseif ($perWeek < 3) {
-        $adviceLines[] = "この期間の投稿ペースは<strong>週あたり {$perWeekRounded} 本</strong>です。視聴維持を考えると、週2〜3本ペースをキープできると安定して視聴者にリーチしやすくなります。";
+        $adviceLines[] = "この期間・種別の投稿ペースは<strong>週あたり {$perWeekRounded} 本</strong>です。視聴維持を考えると、週2〜3本ペースをキープできると安定して視聴者にリーチしやすくなります。";
     } else {
-        $adviceLines[] = "この期間の投稿ペースは<strong>週あたり {$perWeekRounded} 本</strong>と十分な頻度です。次のステップとして、サムネイルやタイトルのテストを行い、1本あたりの伸びを高めるフェーズに入っても良さそうです。";
+        $adviceLines[] = "この期間・種別の投稿ペースは<strong>週あたり {$perWeekRounded} 本</strong>と十分な頻度です。次のステップとして、サムネイルやタイトルのテストを行い、1本あたりの伸びを高めるフェーズに入っても良さそうです。";
     }
 }
 
@@ -423,7 +456,7 @@ if ($bestTag !== null) {
     $adviceLines[] = "タグでは<strong>#{$tagName}</strong> が強く、{$tagCount} 本の動画で平均 {$tagAvg} 回再生されています。今後も同じコンセプトの動画には、このタグを軸に関連タグを組み合わせると良さそうです。";
 }
 
-// 8-5. データが少ないときの補足
+// 8-5. データが少ないとき
 if (empty($adviceLines)) {
     $adviceLines[] = "まだ十分なデータがたまっていないため、明確な傾向は出ていません。まずは継続して動画を投稿しつつ、直近30日間の傾向を少しずつ見ていきましょう。";
 }
@@ -435,10 +468,10 @@ if (empty($adviceLines)) {
     <title>ChannelScope ダッシュボード</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
 
-    <!-- CSS 外部ファイル -->
+    <!-- CSS -->
     <link rel="stylesheet" href="css/style.css">
 
-    <!-- Chart.js CDN -->
+    <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
@@ -472,7 +505,7 @@ if (empty($adviceLines)) {
         </div>
     </header>
 
-    <!-- サマリー -->
+    <!-- サマリー（全体） -->
     <section class="grid-summary">
         <div class="card">
             <h2>
@@ -482,7 +515,7 @@ if (empty($adviceLines)) {
             <div class="value">
                 <?php echo number_format((int)$summary['video_count']); ?>
             </div>
-            <div class="sub">インポート済みの動画本数</div>
+            <div class="sub">インポート済みの動画本数（すべての種別）</div>
         </div>
         <div class="card">
             <h2>
@@ -506,14 +539,14 @@ if (empty($adviceLines)) {
         </div>
     </section>
 
-    <!-- 推移グラフ -->
+    <!-- 推移グラフ + フィルタ -->
     <section class="panel card">
         <div class="panel-header">
             <div>
                 <div class="panel-title">再生数 / 高評価 推移</div>
                 <div class="panel-sub">
-                    日付ごとの合計値（全動画）  
-                    （表示範囲:
+                    日付ごとの合計値（現在の種別: <?php echo htmlspecialchars($videoTypeLabel, ENT_QUOTES, 'UTF-8'); ?>）<br>
+                    期間フィルタ:
                     <?php
                     if ($daysInt === 7) {
                         echo '直近7日';
@@ -522,16 +555,30 @@ if (empty($adviceLines)) {
                     } else {
                         echo '全期間';
                     }
-                    ?>）
+                    ?>
                 </div>
             </div>
-            <div class="filter-group">
-                <a class="filter-button <?php echo ($range === '7d') ? 'active' : ''; ?>"
-                   href="?range=7d">直近7日</a>
-                <a class="filter-button <?php echo ($range === '30d') ? 'active' : ''; ?>"
-                   href="?range=30d">直近30日</a>
-                <a class="filter-button <?php echo ($range === 'all') ? 'active' : ''; ?>"
-                   href="?range=all">全期間</a>
+            <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
+                <!-- 期間フィルタ -->
+                <div class="filter-group">
+                    <a class="filter-button <?php echo ($range === '7d') ? 'active' : ''; ?>"
+                       href="?range=7d&amp;type=<?php echo urlencode($videoType); ?>">直近7日</a>
+                    <a class="filter-button <?php echo ($range === '30d') ? 'active' : ''; ?>"
+                       href="?range=30d&amp;type=<?php echo urlencode($videoType); ?>">直近30日</a>
+                    <a class="filter-button <?php echo ($range === 'all') ? 'active' : ''; ?>"
+                       href="?range=all&amp;type=<?php echo urlencode($videoType); ?>">全期間</a>
+                </div>
+                <!-- 種別フィルタ -->
+                <div class="filter-group">
+                    <a class="filter-button <?php echo ($videoType === 'all') ? 'active' : ''; ?>"
+                       href="?range=<?php echo urlencode($range); ?>&amp;type=all">すべて</a>
+                    <a class="filter-button <?php echo ($videoType === 'short') ? 'active' : ''; ?>"
+                       href="?range=<?php echo urlencode($range); ?>&amp;type=short">ショート</a>
+                    <a class="filter-button <?php echo ($videoType === 'long') ? 'active' : ''; ?>"
+                       href="?range=<?php echo urlencode($range); ?>&amp;type=long">通常動画</a>
+                    <a class="filter-button <?php echo ($videoType === 'live') ? 'active' : ''; ?>"
+                       href="?range=<?php echo urlencode($range); ?>&amp;type=live">ライブ</a>
+                </div>
             </div>
         </div>
         <div class="chart-wrapper">
@@ -545,8 +592,8 @@ if (empty($adviceLines)) {
             <div>
                 <div class="panel-title">曜日別 平均再生数</div>
                 <div class="panel-sub">
-                    公開日の曜日ごとの平均再生数  
-                    （現在の期間フィルタ:
+                    現在の種別: <?php echo htmlspecialchars($videoTypeLabel, ENT_QUOTES, 'UTF-8'); ?> ／ 
+                    期間:
                     <?php
                     if ($daysInt === 7) {
                         echo '直近7日';
@@ -555,7 +602,7 @@ if (empty($adviceLines)) {
                     } else {
                         echo '全期間';
                     }
-                    ?>）
+                    ?>
                 </div>
             </div>
         </div>
@@ -570,8 +617,8 @@ if (empty($adviceLines)) {
             <div>
                 <div class="panel-title">投稿時間帯 分析</div>
                 <div class="panel-sub">
-                    時間帯別の平均再生数 と 曜日×時間帯ヒートマップ  
-                    （現在の期間フィルタ:
+                    現在の種別: <?php echo htmlspecialchars($videoTypeLabel, ENT_QUOTES, 'UTF-8'); ?> ／ 
+                    期間:
                     <?php
                     if ($daysInt === 7) {
                         echo '直近7日';
@@ -580,7 +627,7 @@ if (empty($adviceLines)) {
                     } else {
                         echo '全期間';
                     }
-                    ?>）
+                    ?>
                 </div>
             </div>
         </div>
@@ -592,7 +639,7 @@ if (empty($adviceLines)) {
                     <canvas id="timeBandChart"></canvas>
                 </div>
             </div>
-            <!-- ヒートマップ（曜日×時間帯） -->
+            <!-- ヒートマップ -->
             <div style="overflow-x:auto;">
                 <table class="heatmap-table">
                     <thead>
@@ -641,8 +688,8 @@ if (empty($adviceLines)) {
             <div>
                 <div class="panel-title">タグ別パフォーマンス</div>
                 <div class="panel-sub">
-                    この期間に使用されたタグごとの平均再生数（上位10タグ）  
-                    （期間フィルタ:
+                    現在の種別: <?php echo htmlspecialchars($videoTypeLabel, ENT_QUOTES, 'UTF-8'); ?> ／ 
+                    期間:
                     <?php
                     if ($daysInt === 7) {
                         echo '直近7日';
@@ -651,14 +698,15 @@ if (empty($adviceLines)) {
                     } else {
                         echo '全期間';
                     }
-                    ?>）
+                    ?>
+                    （平均再生数上位10タグ）
                 </div>
             </div>
         </div>
 
         <?php if (empty($topTags)): ?>
             <div style="font-size:12px; color:var(--text-sub);">
-                この期間にタグ情報を持つ動画がほとんどないため、タグ別の分析結果を表示できません。
+                この期間・種別でタグ情報を持つ動画がほとんどないため、タグ別の分析結果を表示できません。
             </div>
         <?php else: ?>
             <div style="overflow-x:auto;">
@@ -688,12 +736,14 @@ if (empty($adviceLines)) {
         <?php endif; ?>
     </section>
 
-    <!-- 最新動画一覧 -->
+    <!-- 最新動画一覧（全種別） -->
     <section class="panel">
         <div class="panel-header">
             <div>
                 <div class="panel-title">最新動画（20件）</div>
-                <div class="panel-sub">インポートしたデータから最新順に表示</div>
+                <div class="panel-sub">
+                    インポートしたデータから最新順に表示（種別フィルタはかけず、チャンネル全体の動きを確認）
+                </div>
             </div>
         </div>
 
@@ -719,6 +769,14 @@ if (empty($adviceLines)) {
                                     <span>再生: <?php echo number_format((int)$video['view_count']); ?></span>
                                     <span>高評価: <?php echo number_format((int)$video['like_count']); ?></span>
                                     <span>コメント: <?php echo number_format((int)$video['comment_count']); ?></span>
+                                    <?php if (!empty($video['video_type'])): ?>
+                                        <span>種別:
+                                            <?php
+                                            $t = $video['video_type'];
+                                            echo htmlspecialchars($typeLabelMap[$t] ?? $t, ENT_QUOTES, 'UTF-8');
+                                            ?>
+                                        </span>
+                                    <?php endif; ?>
                                 </div>
                                 <div class="video-tags">
                                     <?php
@@ -753,7 +811,7 @@ if (empty($adviceLines)) {
                 <?php endif; ?>
             </div>
 
-            <!-- サイド：簡易メモ -->
+            <!-- サイド：NOTES -->
             <div class="card">
                 <h2>
                     <span class="label">NOTES</span>
@@ -761,10 +819,10 @@ if (empty($adviceLines)) {
                 </h2>
                 <div style="font-size:12px; color: var(--text-sub); line-height:1.6;">
                     ・上部のボタンで表示期間（7日 / 30日 / 全期間）を切り替えできます。<br>
-                    ・この期間フィルタは「推移グラフ」「曜日分析」「時間帯分析」「タグ分析」「ランキング」に反映されています。<br>
+                    ・「すべて / ショート / 通常動画 / ライブ」の種別フィルタで、分析対象の動画タイプを絞り込めます。<br>
+                    ・期間＆種別フィルタは「推移グラフ」「曜日分析」「時間帯分析」「タグ分析」「ランキング」「アドバイス」に反映されています。<br>
                     ・ヒートマップは「色が濃いほど平均再生数が高い」ことを示します（数字は平均再生数と動画本数）。<br>
-                    ・タグ別パフォーマンスでは、この期間によく使われたタグの強さを比較できます。<br>
-                    ・新しい動画を追加したら、<code>youtube_import.php</code> を再実行すると反映されます。<br>
+                    ・新しい動画を追加したら、<code>youtube_import.php</code> を実行すると反映されます。<br>
                 </div>
             </div>
         </div>
@@ -776,8 +834,8 @@ if (empty($adviceLines)) {
             <div>
                 <div class="panel-title">チャンネルランキング</div>
                 <div class="panel-sub">
-                    再生数TOP10 と 1日あたりの伸び率TOP10  
-                    （現在の期間フィルタ:
+                    現在の種別: <?php echo htmlspecialchars($videoTypeLabel, ENT_QUOTES, 'UTF-8'); ?> ／ 
+                    期間:
                     <?php
                     if ($daysInt === 7) {
                         echo '直近7日';
@@ -786,7 +844,8 @@ if (empty($adviceLines)) {
                     } else {
                         echo '全期間';
                     }
-                    ?> の公開動画を対象）
+                    ?>
+                    の公開動画を対象
                 </div>
             </div>
         </div>
@@ -847,7 +906,7 @@ if (empty($adviceLines)) {
                                     </div>
                                     <div class="ranking-meta">
                                         再生: <?php echo number_format((int)$video['view_count']); ?>
-                                        ／ 1日あたり: 
+                                        ／ 1日あたり:
                                         <?php
                                         $daysSince = (int)($video['days_since'] ?? 1);
                                         $growth = $daysSince > 0 ? $video['growth_score'] : 0;
@@ -880,7 +939,18 @@ if (empty($adviceLines)) {
             <div>
                 <div class="panel-title">ChannelScope からのひとことアドバイス</div>
                 <div class="panel-sub">
-                    現在の期間設定にもとづいて、簡易的な改善ポイントをコメントします。
+                    現在の「期間: 
+                    <?php
+                    if ($daysInt === 7) {
+                        echo '直近7日';
+                    } elseif ($daysInt === 30) {
+                        echo '直近30日';
+                    } else {
+                        echo '全期間';
+                    }
+                    ?>
+                    ／ 種別: <?php echo htmlspecialchars($videoTypeLabel, ENT_QUOTES, 'UTF-8'); ?>
+                    」にもとづいてコメントしています。
                 </div>
             </div>
         </div>
@@ -896,14 +966,14 @@ if (empty($adviceLines)) {
     </footer>
 </div>
 
-<!-- Chart用データを data-* 属性に埋め込む -->
+<!-- Chart用データ -->
 <div id="js-data"
      data-chart="<?php echo htmlspecialchars(json_encode($chartData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), ENT_QUOTES, 'UTF-8'); ?>"
      data-weekday="<?php echo htmlspecialchars(json_encode($weekdayData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), ENT_QUOTES, 'UTF-8'); ?>"
      data-timeband="<?php echo htmlspecialchars(json_encode($timeBandData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), ENT_QUOTES, 'UTF-8'); ?>"
      style="display:none;"></div>
 
-<!-- 外部JS -->
+<!-- JS -->
 <script src="js/dashboard.js"></script>
 </body>
 </html>

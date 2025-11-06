@@ -1,369 +1,303 @@
 <?php
-// ===========================================
-// ChannelScope - YouTube動画インポートスクリプト
-// API → DB(videosテーブル) に保存
-// ===========================================
-
-require_once __DIR__ . '/config.php'; // $pdo / $youtube_api_key 読み込み
-
-// -------------------------------------------------
-// 設定
-// -------------------------------------------------
-
-// TODO: あなたのチャンネルIDをここに入れてください
-// 例）UCxxxxxxx のような文字列
-$channelId = 'UCQ3vl4KwgBgStc0yFCqXwgg';
-
-// 1回の実行で何件までインポートするか（安全のため上限）
-$maxImportCount = 500;
-
-// -------------------------------------------------
-// YouTube API 呼び出し共通関数
-// -------------------------------------------------
+require_once __DIR__ . '/config.php';
 
 /**
- * シンプルなHTTP GET
+ * YouTube Data API から JSON を取得するヘルパー
  */
-function http_get_json(string $url): array
+function fetchYoutubeJson(string $url): array
 {
     $json = @file_get_contents($url);
-
     if ($json === false) {
-        throw new Exception('YouTube API呼び出しに失敗しました: ' . $url);
+        throw new RuntimeException('YouTube APIリクエストに失敗しました: ' . $url);
     }
 
     $data = json_decode($json, true);
-
     if (!is_array($data)) {
-        throw new Exception('YouTube APIのレスポンスが不正です: ' . $url);
+        throw new RuntimeException('YouTube APIレスポンスのJSONデコードに失敗しました。');
+    }
+
+    if (isset($data['error'])) {
+        $msg = $data['error']['message'] ?? 'Unknown error';
+        throw new RuntimeException('YouTube APIエラー: ' . $msg);
     }
 
     return $data;
 }
 
-// -------------------------------------------------
-// 1. チャンネルの「アップロード動画」プレイリストID取得
-// -------------------------------------------------
+/**
+ * ISO8601の長さ表記（PT4M20S など）を秒数に変換
+ */
+function parseDurationToSeconds(?string $isoDuration): ?int
+{
+    if (empty($isoDuration)) {
+        return null;
+    }
+
+    // 例: PT1H2M3S, PT4M20S, PT30S, PT2H など
+    $pattern = '/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/';
+    if (!preg_match($pattern, $isoDuration, $matches)) {
+        return null;
+    }
+
+    $hours   = isset($matches[1]) ? (int)$matches[1] : 0;
+    $minutes = isset($matches[2]) ? (int)$matches[2] : 0;
+    $seconds = isset($matches[3]) ? (int)$matches[3] : 0;
+
+    return $hours * 3600 + $minutes * 60 + $seconds;
+}
 
 /**
- * チャンネルの uploads プレイリストIDを取得
+ * 動画タイプを決定する
+ * - liveStreamingDetails があれば live
+ * - duration_seconds <= 60 なら short
+ * - それ以外は long
  */
-function get_uploads_playlist_id(string $channelId, string $apiKey): string
+function decideVideoType(?array $liveDetails, ?int $durationSeconds): string
 {
-    $url = sprintf(
+    // ライブ配信判定
+    if (!empty($liveDetails) && (isset($liveDetails['actualStartTime']) || isset($liveDetails['scheduledStartTime']))) {
+        return 'live';
+    }
+
+    // ショート判定（60秒以下）
+    if ($durationSeconds !== null && $durationSeconds > 0 && $durationSeconds <= 60) {
+        return 'short';
+    }
+
+    // 長さ不明の場合
+    if ($durationSeconds === null || $durationSeconds <= 0) {
+        return 'unknown';
+    }
+
+    return 'long';
+}
+
+// --------------------------------------------------
+// メイン処理
+// --------------------------------------------------
+echo "ChannelScope YouTube インポート開始..." . PHP_EOL . PHP_EOL;
+
+if (empty($youtubeApiKey) || empty($youtubeChannelId)) {
+    echo "[ERROR] config.php で \$youtubeApiKey / \$youtubeChannelId が設定されていません。" . PHP_EOL;
+    exit(1);
+}
+
+// 1. チャンネルの「uploads」プレイリストIDを取得
+try {
+    $channelUrl = sprintf(
         'https://www.googleapis.com/youtube/v3/channels?part=contentDetails&id=%s&key=%s',
-        urlencode($channelId),
-        urlencode($apiKey)
+        urlencode($youtubeChannelId),
+        urlencode($youtubeApiKey)
+    );
+    $channelData = fetchYoutubeJson($channelUrl);
+
+    if (empty($channelData['items'][0]['contentDetails']['relatedPlaylists']['uploads'])) {
+        throw new RuntimeException('uploadsプレイリストIDが取得できませんでした。');
+    }
+
+    $uploadsPlaylistId = $channelData['items'][0]['contentDetails']['relatedPlaylists']['uploads'];
+
+    echo "チャンネルID: {$youtubeChannelId}" . PHP_EOL;
+    echo "uploadsプレイリストID: {$uploadsPlaylistId}" . PHP_EOL . PHP_EOL;
+
+} catch (Exception $e) {
+    echo "[ERROR] チャンネル情報の取得に失敗: " . $e->getMessage() . PHP_EOL;
+    exit(1);
+}
+
+// 2. uploads プレイリストから全動画の videoId を取得しながら、詳細情報を取得
+$totalFetched   = 0;
+$totalInserted  = 0;
+$totalUpdated   = 0;
+
+$nextPageToken = null;
+
+do {
+    $playlistUrl = sprintf(
+        'https://www.googleapis.com/youtube/v3/playlistItems?part=contentDetails&playlistId=%s&maxResults=50&key=%s%s',
+        urlencode($uploadsPlaylistId),
+        urlencode($youtubeApiKey),
+        $nextPageToken ? '&pageToken=' . urlencode($nextPageToken) : ''
     );
 
-    $data = http_get_json($url);
-
-    if (empty($data['items'][0]['contentDetails']['relatedPlaylists']['uploads'])) {
-        throw new Exception('uploadsプレイリストIDが取得できませんでした。チャンネルIDを確認してください。');
+    try {
+        $playlistData = fetchYoutubeJson($playlistUrl);
+    } catch (Exception $e) {
+        echo "[ERROR] playlistItems の取得に失敗: " . $e->getMessage() . PHP_EOL;
+        break;
     }
 
-    return $data['items'][0]['contentDetails']['relatedPlaylists']['uploads'];
-}
+    if (empty($playlistData['items'])) {
+        break;
+    }
 
-// -------------------------------------------------
-// 2. uploads プレイリストから動画一覧を取得
-// -------------------------------------------------
-
-/**
- * プレイリストから動画の基本情報一覧を取得
- * - videoId
- * - title
- * - description
- * - publishedAt
- * - tags
- * - thumbnail_url
- */
-function fetch_videos_from_playlist(string $playlistId, string $apiKey, int $maxImportCount): array
-{
-    $videos = [];
-    $pageToken = null;
-
-    while (true) {
-        $url = 'https://www.googleapis.com/youtube/v3/playlistItems'
-            . '?part=snippet'
-            . '&playlistId=' . urlencode($playlistId)
-            . '&maxResults=50'
-            . '&key=' . urlencode($apiKey);
-
-        if ($pageToken) {
-            $url .= '&pageToken=' . urlencode($pageToken);
-        }
-
-        $data = http_get_json($url);
-
-        if (empty($data['items'])) {
-            break;
-        }
-
-        foreach ($data['items'] as $item) {
-            $snippet = $item['snippet'] ?? null;
-            if (!$snippet) {
-                continue;
-            }
-
-            $resource = $snippet['resourceId'] ?? [];
-            if (($resource['kind'] ?? '') !== 'youtube#video') {
-                continue;
-            }
-
-            $videoId = $resource['videoId'] ?? null;
-            if (!$videoId) {
-                continue;
-            }
-
-            $videos[$videoId] = [
-                'video_id'      => $videoId,
-                'title'         => $snippet['title'] ?? '',
-                'description'   => $snippet['description'] ?? '',
-                'published_at'  => $snippet['publishedAt'] ?? null,
-                'tags'          => $snippet['tags'] ?? [],
-                'thumbnail_url' => $snippet['thumbnails']['high']['url']
-                    ?? ($snippet['thumbnails']['default']['url'] ?? null),
-            ];
-
-            if (count($videos) >= $maxImportCount) {
-                break 2; // 2重ループ脱出
-            }
-        }
-
-        // 次ページがあれば継続
-        if (!empty($data['nextPageToken'])) {
-            $pageToken = $data['nextPageToken'];
-        } else {
-            break;
+    $videoIds = [];
+    foreach ($playlistData['items'] as $item) {
+        $vid = $item['contentDetails']['videoId'] ?? null;
+        if ($vid) {
+            $videoIds[] = $vid;
         }
     }
 
-    return $videos;
-}
+    if (empty($videoIds)) {
+        break;
+    }
 
-// -------------------------------------------------
-// 3. 複数動画の統計情報を取得（views / likes / comments）
-// -------------------------------------------------
+    // 3. videos.list で詳細情報をまとめて取得
+    $videosUrl = sprintf(
+        'https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics,liveStreamingDetails&id=%s&maxResults=50&key=%s',
+        urlencode(implode(',', $videoIds)),
+        urlencode($youtubeApiKey)
+    );
 
-/**
- * 統計情報をまとめて取得
- */
-function fetch_statistics_for_videos(array $videoIds, string $apiKey): array
-{
-    $stats = [];
+    try {
+        $videosData = fetchYoutubeJson($videosUrl);
+    } catch (Exception $e) {
+        echo "[ERROR] videos.list の取得に失敗: " . $e->getMessage() . PHP_EOL;
+        break;
+    }
 
-    // YouTube APIはidを50件まで一括取得可能
-    $chunks = array_chunk($videoIds, 50);
+    if (empty($videosData['items'])) {
+        break;
+    }
 
-    foreach ($chunks as $chunk) {
-        $url = 'https://www.googleapis.com/youtube/v3/videos'
-            . '?part=statistics'
-            . '&id=' . urlencode(implode(',', $chunk))
-            . '&key=' . urlencode($apiKey);
+    foreach ($videosData['items'] as $video) {
+        $totalFetched++;
 
-        $data = http_get_json($url);
+        $videoId   = $video['id'] ?? null;
+        $snippet   = $video['snippet'] ?? [];
+        $stats     = $video['statistics'] ?? [];
+        $details   = $video['contentDetails'] ?? [];
+        $liveInfo  = $video['liveStreamingDetails'] ?? [];
 
-        if (empty($data['items'])) {
+        if (!$videoId) {
             continue;
         }
 
-        foreach ($data['items'] as $item) {
-            $videoId = $item['id'] ?? null;
-            if (!$videoId) {
-                continue;
+        $title       = $snippet['title'] ?? '';
+        $description = $snippet['description'] ?? '';
+        $publishedAt = $snippet['publishedAt'] ?? null;
+        $tagsArray   = $snippet['tags'] ?? [];
+        $tags        = implode(',', $tagsArray);
+
+        // サムネイル（標準サイズ→なければ高解像度→デフォルト）
+        $thumb = '';
+        if (!empty($snippet['thumbnails']['standard']['url'])) {
+            $thumb = $snippet['thumbnails']['standard']['url'];
+        } elseif (!empty($snippet['thumbnails']['high']['url'])) {
+            $thumb = $snippet['thumbnails']['high']['url'];
+        } elseif (!empty($snippet['thumbnails']['default']['url'])) {
+            $thumb = $snippet['thumbnails']['default']['url'];
+        }
+
+        $viewCount    = isset($stats['viewCount'])    ? (int)$stats['viewCount']    : 0;
+        $likeCount    = isset($stats['likeCount'])    ? (int)$stats['likeCount']    : 0;
+        $commentCount = isset($stats['commentCount']) ? (int)$stats['commentCount'] : 0;
+
+        // 長さとタイプの判定
+        $durationIso     = $details['duration'] ?? null;
+        $durationSeconds = parseDurationToSeconds($durationIso);
+        $videoType       = decideVideoType($liveInfo, $durationSeconds);
+
+        // DB登録（INSERT or UPDATE）
+        try {
+            // 既存レコードチェック
+            $stmt = $pdo->prepare("SELECT id FROM videos WHERE external_video_id = :vid LIMIT 1");
+            $stmt->execute([':vid' => $videoId]);
+            $existing = $stmt->fetch();
+
+            if ($existing) {
+                // UPDATE
+                $sql = "
+                    UPDATE videos
+                    SET
+                        title            = :title,
+                        description      = :description,
+                        view_count       = :view_count,
+                        like_count       = :like_count,
+                        comment_count    = :comment_count,
+                        duration_seconds = :duration_seconds,
+                        video_type       = :video_type,
+                        published_at     = :published_at,
+                        tags             = :tags,
+                        thumbnail_url    = :thumb
+                    WHERE external_video_id = :vid
+                ";
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute([
+                    ':title'           => $title,
+                    ':description'     => $description,
+                    ':view_count'      => $viewCount,
+                    ':like_count'      => $likeCount,
+                    ':comment_count'   => $commentCount,
+                    ':duration_seconds'=> $durationSeconds,
+                    ':video_type'      => $videoType,
+                    ':published_at'    => $publishedAt,
+                    ':tags'            => $tags,
+                    ':thumb'           => $thumb,
+                    ':vid'             => $videoId,
+                ]);
+                $totalUpdated++;
+            } else {
+                // INSERT
+                $sql = "
+                    INSERT INTO videos (
+                        external_video_id,
+                        title,
+                        description,
+                        view_count,
+                        like_count,
+                        comment_count,
+                        duration_seconds,
+                        video_type,
+                        published_at,
+                        tags,
+                        thumbnail_url
+                    ) VALUES (
+                        :external_video_id,
+                        :title,
+                        :description,
+                        :view_count,
+                        :like_count,
+                        :comment_count,
+                        :duration_seconds,
+                        :video_type,
+                        :published_at,
+                        :tags,
+                        :thumbnail_url
+                    )
+                ";
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute([
+                    ':external_video_id' => $videoId,
+                    ':title'             => $title,
+                    ':description'       => $description,
+                    ':view_count'        => $viewCount,
+                    ':like_count'        => $likeCount,
+                    ':comment_count'     => $commentCount,
+                    ':duration_seconds'  => $durationSeconds,
+                    ':video_type'        => $videoType,
+                    ':published_at'      => $publishedAt,
+                    ':tags'              => $tags,
+                    ':thumbnail_url'     => $thumb,
+                ]);
+                $totalInserted++;
             }
-
-            $statistics = $item['statistics'] ?? [];
-
-            $stats[$videoId] = [
-                'view_count'    => isset($statistics['viewCount']) ? (int)$statistics['viewCount'] : null,
-                'like_count'    => isset($statistics['likeCount']) ? (int)$statistics['likeCount'] : null,
-                'comment_count' => isset($statistics['commentCount']) ? (int)$statistics['commentCount'] : null,
-            ];
+        } catch (Exception $e) {
+            echo "[ERROR] DB登録エラー (videoId={$videoId}): " . $e->getMessage() . PHP_EOL;
         }
     }
 
-    return $stats;
-}
+    $nextPageToken = $playlistData['nextPageToken'] ?? null;
 
-// -------------------------------------------------
-// 4. DBへの保存（重複チェック付き）
-// -------------------------------------------------
+} while (!empty($nextPageToken));
 
-/**
- * videosテーブルに動画をINSERT/UPDATEする
- *
- * テーブル想定例:
- *  - id (INT AUTO_INCREMENT, PK)
- *  - external_video_id (VARCHAR, YouTubeのvideoId)
- *  - title (VARCHAR)
- *  - description (TEXT)
- *  - published_at (DATETIME)
- *  - view_count (INT)
- *  - like_count (INT)
- *  - comment_count (INT)
- *  - tags (TEXT)  カンマ区切り or JSON
- *  - thumbnail_url (VARCHAR)
- *  - created_at (DATETIME)
- *  - updated_at (DATETIME)
- */
-function upsert_video(PDO $pdo, array $video): void
-{
-    // 既存確認（external_video_idで検索）
-    $sql = "SELECT id FROM videos WHERE external_video_id = :external_video_id LIMIT 1";
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute([
-        ':external_video_id' => $video['external_video_id'],
-    ]);
-    $existing = $stmt->fetch();
-
-    if ($existing) {
-        // 更新
-        $sql = "
-            UPDATE videos SET
-                title          = :title,
-                description    = :description,
-                published_at   = :published_at,
-                view_count     = :view_count,
-                like_count     = :like_count,
-                comment_count  = :comment_count,
-                tags           = :tags,
-                thumbnail_url  = :thumbnail_url,
-                updated_at     = NOW()
-            WHERE id = :id
-        ";
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute([
-            ':title'         => $video['title'],
-            ':description'   => $video['description'],
-            ':published_at'  => $video['published_at'],
-            ':view_count'    => $video['view_count'],
-            ':like_count'    => $video['like_count'],
-            ':comment_count' => $video['comment_count'],
-            ':tags'          => $video['tags'],
-            ':thumbnail_url' => $video['thumbnail_url'],
-            ':id'            => $existing['id'],
-        ]);
-    } else {
-        // 新規INSERT
-        $sql = "
-            INSERT INTO videos (
-                external_video_id,
-                title,
-                description,
-                published_at,
-                view_count,
-                like_count,
-                comment_count,
-                tags,
-                thumbnail_url,
-                created_at,
-                updated_at
-            ) VALUES (
-                :external_video_id,
-                :title,
-                :description,
-                :published_at,
-                :view_count,
-                :like_count,
-                :comment_count,
-                :tags,
-                :thumbnail_url,
-                NOW(),
-                NOW()
-            )
-        ";
-
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute([
-            ':external_video_id' => $video['external_video_id'],
-            ':title'             => $video['title'],
-            ':description'       => $video['description'],
-            ':published_at'      => $video['published_at'],
-            ':view_count'        => $video['view_count'],
-            ':like_count'        => $video['like_count'],
-            ':comment_count'     => $video['comment_count'],
-            ':tags'              => $video['tags'],
-            ':thumbnail_url'     => $video['thumbnail_url'],
-        ]);
-    }
-}
-
-// -------------------------------------------------
-// メイン処理
-// -------------------------------------------------
-
-header('Content-Type: text/plain; charset=utf-8');
-
-echo "ChannelScope YouTubeインポート開始...\n\n";
-
-try {
-    if (!isset($pdo) || !($pdo instanceof PDO)) {
-        throw new Exception('PDOインスタンス($pdo)が正しく初期化されていません。config.php / config.*.php を確認してください。');
-    }
-
-    if (empty($youtube_api_key) || $youtube_api_key === 'YOUR_API_KEY_HERE') {
-        throw new Exception('YouTube APIキーが設定されていません。configファイルの $youtube_api_key を確認してください。');
-    }
-
-    if (empty($channelId) || $channelId === 'YOUR_CHANNEL_ID_HERE') {
-        throw new Exception('チャンネルIDが設定されていません。$channelId を自分のチャンネルIDに設定してください。');
-    }
-
-    echo "チャンネルID: {$channelId}\n";
-
-    // 1. uploadsプレイリストID取得
-    $uploadsPlaylistId = get_uploads_playlist_id($channelId, $youtube_api_key);
-    echo "uploadsプレイリストID: {$uploadsPlaylistId}\n\n";
-
-    // 2. プレイリストから動画一覧取得
-    $videos = fetch_videos_from_playlist($uploadsPlaylistId, $youtube_api_key, $maxImportCount);
-    $videoCount = count($videos);
-    echo "取得した動画件数: {$videoCount}\n";
-
-    if ($videoCount === 0) {
-        echo "インポートする動画がありません。\n";
-        exit;
-    }
-
-    // 3. 統計情報を取得
-    $videoIds = array_keys($videos);
-    $stats = fetch_statistics_for_videos($videoIds, $youtube_api_key);
-
-    // 4. DBへ保存
-    $imported = 0;
-
-    foreach ($videos as $videoId => $info) {
-        $stat = $stats[$videoId] ?? [
-            'view_count'    => null,
-            'like_count'    => null,
-            'comment_count' => null,
-        ];
-
-        $video = [
-            'external_video_id' => $videoId,
-            'title'             => $info['title'],
-            'description'       => $info['description'],
-            'published_at'      => $info['published_at']
-                ? date('Y-m-d H:i:s', strtotime($info['published_at']))
-                : null,
-            'view_count'        => $stat['view_count'],
-            'like_count'        => $stat['like_count'],
-            'comment_count'     => $stat['comment_count'],
-            'tags'              => !empty($info['tags']) ? implode(',', $info['tags']) : '',
-            'thumbnail_url'     => $info['thumbnail_url'],
-        ];
-
-        upsert_video($pdo, $video);
-        $imported++;
-
-        echo " - {$videoId} を保存しました ({$imported}/{$videoCount})\n";
-    }
-
-    echo "\nインポート完了: {$imported} 件の動画をDBに保存しました。\n";
-
-} catch (Throwable $e) {
-    echo "\n[エラー]\n";
-    echo $e->getMessage() . "\n";
-}
+echo PHP_EOL;
+echo "----------------------------------------" . PHP_EOL;
+echo "  インポート処理完了" . PHP_EOL;
+echo "----------------------------------------" . PHP_EOL;
+echo "取得対象動画数: {$totalFetched}" . PHP_EOL;
+echo "新規追加:        {$totalInserted}" . PHP_EOL;
+echo "更新:            {$totalUpdated}" . PHP_EOL;
+echo PHP_EOL;
+echo "※ 既存動画も UPDATE しているので、duration_seconds / video_type も更新済みです。" . PHP_EOL;
