@@ -1,0 +1,8 @@
+/vendor/
+/config.local.php
+/config.production.php
+/.env
+/.idea/
+/.vscode/
+/nbproject/
+/*.log
