@@ -80,6 +80,29 @@ function decideVideoType(?array $liveDetails, ?int $durationSeconds): string
     return 'long';
 }
 
+/**
+ * YouTubeのpublishedAt(ISO8601, 例: 2025-11-06T14:18:53Z)を
+ * MySQL DATETIME形式(YYYY-MM-DD HH:MM:SS)に変換
+ */
+function normalizePublishedAt(?string $isoDatetime): ?string
+{
+    if (empty($isoDatetime)) {
+        return null;
+    }
+
+    try {
+        // YouTubeの日時はUTCなので、そのままパース
+        $dt = new DateTime($isoDatetime);
+        // 必要ならタイムゾーン変換（例: 日本時間）
+        // $dt->setTimezone(new DateTimeZone('Asia/Tokyo'));
+
+        return $dt->format('Y-m-d H:i:s');
+    } catch (Exception $e) {
+        // パースに失敗したら null を返す（DBには NULL として入る想定）
+        return null;
+    }
+}
+
 // --------------------------------------------------
 // メイン処理
 // --------------------------------------------------
@@ -184,7 +207,11 @@ do {
 
         $title       = $snippet['title'] ?? '';
         $description = $snippet['description'] ?? '';
-        $publishedAt = $snippet['publishedAt'] ?? null;
+
+        // ここで ISO8601 を MySQL DATETIME 形式に変換
+        $publishedAtRaw = $snippet['publishedAt'] ?? null;
+        $publishedAt    = normalizePublishedAt($publishedAtRaw);
+
         $tagsArray   = $snippet['tags'] ?? [];
         $tags        = implode(',', $tagsArray);
 
@@ -308,4 +335,4 @@ echo "取得対象動画数: {$totalFetched}" . PHP_EOL;
 echo "新規追加:        {$totalInserted}" . PHP_EOL;
 echo "更新:            {$totalUpdated}" . PHP_EOL;
 echo PHP_EOL;
-echo "※ 既存動画も UPDATE しているので、duration_seconds / video_type も更新済みです。" . PHP_EOL;
+echo "※ 既存動画も UPDATE しているので、duration_seconds / video_type / published_at も更新済みです。" . PHP_EOL;
