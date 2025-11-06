@@ -1,43 +1,34 @@
 <?php
-// デバッグ用: logs への書き込み状況を確認するラッパー
+// cronから実行する用のラッパー（実行結果を logs に保存）
 
+// エラーはログ側に乗るので画面には出さなくてOK（デバッグ時は 1 にしてもよい）
 error_reporting(E_ALL);
-ini_set('display_errors', '1');
+ini_set('display_errors', '0');
 
-echo "<pre>\n";
-
+// ログディレクトリ & ログファイル名
 $logDir  = __DIR__ . '/logs';
-echo "logDir: {$logDir}\n";
+$logFile = $logDir . '/youtube_import_' . date('Ymd_His') . '.log';
 
-// ディレクトリ存在チェック
+// ログ用ディレクトリがなければ作成
 if (!is_dir($logDir)) {
-    echo "logs directory does not exist. trying to create...\n";
-    $mk = @mkdir($logDir, 0777, true);
-    echo "mkdir result: " . var_export($mk, true) . "\n";
-} else {
-    echo "logs directory exists.\n";
+    mkdir($logDir, 0777, true);
 }
 
-// 書き込み可能かどうか
-echo "is_writable(logDir): " . (is_writable($logDir) ? 'YES' : 'NO') . "\n";
+// 出力をすべてバッファリング
+ob_start();
 
-// テストファイル書き込み
-$testFile = $logDir . '/test_' . date('Ymd_His') . '.txt';
-echo "testFile: {$testFile}\n";
+echo "=== CRON YOUTUBE IMPORT START: " . date('Y-m-d H:i:s') . " ===" . PHP_EOL;
 
-$result = @file_put_contents($testFile, "test log\n");
-echo "file_put_contents result: " . var_export($result, true) . "\n";
-
-if ($result === false) {
-    echo "error_get_last():\n";
-    var_dump(error_get_last());
-}
-
-// ここから実際のインポート処理（これは動いているかの確認用）
-echo "\n=== RUNNING youtube_import.php ===\n";
-
+// 実際のインポート処理（本体）
 require __DIR__ . '/youtube_import.php';
 
-echo "=== END youtube_import.php ===\n";
+echo "=== CRON YOUTUBE IMPORT END: " . date('Y-m-d H:i:s') . " ===" . PHP_EOL;
 
-echo "</pre>\n";
+// バッファ内容を取得
+$buffer = ob_get_contents();
+
+// ブラウザ/cron標準出力にもそのまま出す
+ob_end_flush();
+
+// ログファイルに書き出し（追記）
+file_put_contents($logFile, $buffer, FILE_APPEND);
