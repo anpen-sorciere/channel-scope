@@ -1,27 +1,26 @@
 <?php
-// =======================================
-// ChannelScope - ローカル環境設定 (XAMPP)
-// =======================================
+/**
+ * ローカル環境（XAMPP）用設定ファイル
+ * ChannelScope - 開発環境用
+ */
 
-// DB接続設定
-$host = "localhost";
-$user = "root";
-$password = "";
-$dbname = "purplelion51_channel_scope_db";
+// ----------------------------------------
+// 🔧 データベース接続設定
+// ----------------------------------------
+$dbHost = 'localhost';
+$dbName = 'purplelion51_channel_scope_db';
+$dbUser = 'root';
+$dbPass = ''; // XAMPPのデフォルトはパスワードなし
 
-// 環境識別
-define('ENVIRONMENT', 'local');
+// ----------------------------------------
+// 🔑 YouTube API設定
+// ----------------------------------------
+// ※ 実際のAPIキーを入れてください
+$youtubeApiKey    = 'AIzaSyBzCzdW-ohPfzH7ZUeb10MRKp7DCvNwwrA';
+$youtubeChannelId = 'UCQ3vl4KwgBgStc0yFCqXwgg';
 
-// ベースURL
-$baseUrl = 'http://localhost/ChannelScope/';
-
-// APIキー設定（既存仕様に合わせてスネークケース）
-$youtube_api_key = 'AIzaSyBzCzdW-ohPfzH7ZUeb10MRKp7DCvNwwrA';
-
-// PDO接続
-try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $user, $password);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-} catch (PDOException $e) {
-    die("DB接続エラー（ローカル）: " . $e->getMessage());
-}
+// ----------------------------------------
+// 🧩 互換用（旧変数名対応）
+// ----------------------------------------
+$youtube_api_key    = $youtubeApiKey;
+$youtube_channel_id = $youtubeChannelId;

@@ -1,27 +1,26 @@
 <?php
-// =======================================
-// ChannelScope - 本番環境設定 (さくらサーバー)
-// =======================================
+/**
+ * 本番環境（さくらレンタルサーバー）用設定ファイル
+ * ChannelScope - デプロイ環境用
+ */
 
-// DB接続設定
-$host = "mysql2103.db.sakura.ne.jp";
-$user = "purplelion51";
-$password = "-6r_am73";
-$dbname = "purplelion51_channel_scope_db";
+// ----------------------------------------
+// 🔧 データベース接続設定
+// ----------------------------------------
+$dbHost = 'mysql2103.db.sakura.ne.jp';
+$dbName = 'purplelion51_channel_scope_db';
+$dbUser = 'purplelion51';
+$dbPass = '-6r_am73';  // ← あなたの設定どおり
 
-// 環境識別
-define('ENVIRONMENT', 'production');
+// ----------------------------------------
+// 🔑 YouTube API設定
+// ----------------------------------------
+// ※ ローカルと同じAPIキーを使用可能
+$youtubeApiKey    = 'AIzaSyBzCzdW-ohPfzH7ZUeb10MRKp7DCvNwwrA';
+$youtubeChannelId = 'UCQ3vl4KwgBgStc0yFCqXwgg';
 
-// ベースURL
-$baseUrl = 'https://purplelion51.sakura.ne.jp/ChannelScope/';
-
-// APIキー設定（既存仕様に合わせてスネークケース）
-$youtube_api_key = 'AIzaSyBzCzdW-ohPfzH7ZUeb10MRKp7DCvNwwrA';
-
-// PDO接続
-try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $user, $password);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-} catch (PDOException $e) {
-    die("DB接続エラー（本番）: " . $e->getMessage());
-}
+// ----------------------------------------
+// 🧩 互換用（旧変数名対応）
+// ----------------------------------------
+$youtube_api_key    = $youtubeApiKey;
+$youtube_channel_id = $youtubeChannelId;
