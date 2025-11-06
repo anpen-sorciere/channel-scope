@@ -386,3 +386,29 @@ footer {
 .advice-list li {
     margin-bottom: 6px;
 }
+
+/* ✅ ここから AIアドバイスボタン用のスタイルを追加 */
+
+.video-ai-link {
+    margin-top: 4px;
+}
+
+.ai-advice-btn {
+    display: inline-block;
+    margin-top: 2px;
+    padding: 4px 10px;
+    font-size: 11px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent-strong);
+    text-decoration: none;
+    border: 1px solid rgba(56,189,248,0.4);
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease, transform 0.05s ease;
+}
+
+.ai-advice-btn:hover {
+    background: var(--accent-strong);
+    color: #0b1120;
+    transform: translateY(-1px);
+}

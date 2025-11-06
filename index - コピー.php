@@ -805,16 +805,6 @@ if (empty($adviceLines)) {
                                         </a>
                                     <?php endif; ?>
                                 </div>
-
-                                <!-- 💬 AIアドバイスボタンをここに追加 -->
-                                <div class="video-ai-link">
-                                    <a href="video_advice.php?video_id=<?php echo urlencode($video['external_video_id']); ?>"
-                                       class="ai-advice-btn"
-                                       target="_blank" rel="noopener noreferrer">
-                                        💬 AIアドバイスを見る
-                                    </a>
-                                </div>
-
                             </div>
                         </div>
                     <?php endforeach; ?>
