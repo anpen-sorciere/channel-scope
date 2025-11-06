@@ -139,6 +139,59 @@ if ($video && !$error) {
 
     $promptText = implode("\n", $promptLines);
 }
+
+// --------------------------------------------------
+// 5. AIアドバイスデータをDBから取得（video_ai_adviceテーブル）
+// --------------------------------------------------
+$aiAdviceList = [];
+if ($video && !$error && !empty($videoId)) {
+    $sqlAiAdvice = "
+        SELECT
+            id,
+            provider,
+            model,
+            title_suggestions,
+            tag_suggestions,
+            short_script,
+            improvement_advice,
+            strategy_advice,
+            raw_response,
+            created_at,
+            updated_at
+        FROM video_ai_advice
+        WHERE video_id = :vid
+        ORDER BY updated_at DESC
+    ";
+    $stmt = $pdo->prepare($sqlAiAdvice);
+    $stmt->execute([':vid' => $videoId]);
+    $aiAdviceList = $stmt->fetchAll();
+
+    // JSON文字列を配列に変換
+    foreach ($aiAdviceList as &$advice) {
+        if (!empty($advice['title_suggestions'])) {
+            $decoded = json_decode($advice['title_suggestions'], true);
+            if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                $advice['title_suggestions_array'] = $decoded;
+            } else {
+                $advice['title_suggestions_array'] = [];
+            }
+        } else {
+            $advice['title_suggestions_array'] = [];
+        }
+
+        if (!empty($advice['tag_suggestions'])) {
+            $decoded = json_decode($advice['tag_suggestions'], true);
+            if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                $advice['tag_suggestions_array'] = $decoded;
+            } else {
+                $advice['tag_suggestions_array'] = [];
+            }
+        } else {
+            $advice['tag_suggestions_array'] = [];
+        }
+    }
+    unset($advice);
+}
 ?>
 <!DOCTYPE html>
 <html lang="ja">
@@ -260,6 +313,89 @@ if ($video && !$error) {
             <?php endif; ?>
         </section>
 
+        <!-- 保存済みAIアドバイス -->
+        <?php if (!empty($aiAdviceList)): ?>
+            <?php foreach ($aiAdviceList as $advice): ?>
+                <section class="panel card">
+                    <h2>
+                        <span class="label">AI ADVICE</span>
+                        <span class="badge">
+                            <?php echo htmlspecialchars(strtoupper($advice['provider']), ENT_QUOTES, 'UTF-8'); ?>
+                            (<?php echo htmlspecialchars($advice['model'], ENT_QUOTES, 'UTF-8'); ?>)
+                        </span>
+                    </h2>
+                    <div style="font-size:11px; color:var(--text-sub); margin-bottom:12px;">
+                        最終更新: <?php echo htmlspecialchars(date('Y-m-d H:i', strtotime($advice['updated_at'])), ENT_QUOTES, 'UTF-8'); ?>
+                    </div>
+
+                    <?php if (!empty($advice['title_suggestions_array'])): ?>
+                        <div style="margin-bottom:16px;">
+                            <h3 style="font-size:13px; font-weight:600; margin-bottom:6px; color:var(--accent-strong);">
+                                📝 タイトル案
+                            </h3>
+                            <ul class="advice-list">
+                                <?php foreach ($advice['title_suggestions_array'] as $title): ?>
+                                    <li><?php echo htmlspecialchars($title, ENT_QUOTES, 'UTF-8'); ?></li>
+                                <?php endforeach; ?>
+                            </ul>
+                        </div>
+                    <?php endif; ?>
+
+                    <?php if (!empty($advice['tag_suggestions_array'])): ?>
+                        <div style="margin-bottom:16px;">
+                            <h3 style="font-size:13px; font-weight:600; margin-bottom:6px; color:var(--accent-strong);">
+                                🏷️ タグ案
+                            </h3>
+                            <div style="display:flex; flex-wrap:wrap; gap:4px;">
+                                <?php foreach ($advice['tag_suggestions_array'] as $tag): ?>
+                                    <span class="tag">#<?php echo htmlspecialchars($tag, ENT_QUOTES, 'UTF-8'); ?></span>
+                                <?php endforeach; ?>
+                            </div>
+                        </div>
+                    <?php endif; ?>
+
+                    <?php if (!empty($advice['short_script'])): ?>
+                        <div style="margin-bottom:16px;">
+                            <h3 style="font-size:13px; font-weight:600; margin-bottom:6px; color:var(--accent-strong);">
+                                🎬 ショート動画構成案
+                            </h3>
+                            <div style="font-size:12px; color:var(--text-main); white-space:pre-wrap; line-height:1.6;">
+                                <?php echo nl2br(htmlspecialchars($advice['short_script'], ENT_QUOTES, 'UTF-8')); ?>
+                            </div>
+                        </div>
+                    <?php endif; ?>
+
+                    <?php if (!empty($advice['improvement_advice'])): ?>
+                        <div style="margin-bottom:16px;">
+                            <h3 style="font-size:13px; font-weight:600; margin-bottom:6px; color:var(--accent-strong);">
+                                💡 改善ポイント
+                            </h3>
+                            <div style="font-size:12px; color:var(--text-main); white-space:pre-wrap; line-height:1.6;">
+                                <?php echo nl2br(htmlspecialchars($advice['improvement_advice'], ENT_QUOTES, 'UTF-8')); ?>
+                            </div>
+                        </div>
+                    <?php endif; ?>
+
+                    <?php if (!empty($advice['strategy_advice'])): ?>
+                        <div style="margin-bottom:16px;">
+                            <h3 style="font-size:13px; font-weight:600; margin-bottom:6px; color:var(--accent-strong);">
+                                🎯 チャンネル戦略提案
+                            </h3>
+                            <div style="font-size:12px; color:var(--text-main); white-space:pre-wrap; line-height:1.6;">
+                                <?php echo nl2br(htmlspecialchars($advice['strategy_advice'], ENT_QUOTES, 'UTF-8')); ?>
+                            </div>
+                        </div>
+                    <?php endif; ?>
+
+                    <?php if (empty($advice['title_suggestions_array']) && empty($advice['tag_suggestions_array']) && empty($advice['short_script']) && empty($advice['improvement_advice']) && empty($advice['strategy_advice'])): ?>
+                        <div style="font-size:12px; color:var(--text-sub);">
+                            このAIアドバイスにはまだ詳細な内容が保存されていません。
+                        </div>
+                    <?php endif; ?>
+                </section>
+            <?php endforeach; ?>
+        <?php endif; ?>
+
         <!-- LLM向けプロンプトテンプレ -->
         <section class="panel card">
             <h2>
@@ -268,7 +404,8 @@ if ($video && !$error) {
             </h2>
             <div style="font-size:12px; color:var(--text-sub); margin-bottom:6px;">
                 下のテキストを <strong>そのままコピーして、ChatGPT や Gemini</strong> に貼り付けると、<br>
-                「タイトル案 / タグ案 / ショート化アイデア / 次の動画ネタ」まで含めた提案を一気に受け取れます。
+                「タイトル案 / タグ案 / ショート化アイデア / 次の動画ネタ」まで含めた提案を一気に受け取れます。<br>
+                取得した結果は <code>api/ai_advice_api.php</code> にPOSTして保存できます。
             </div>
             <textarea
                 style="width:100%; min-height:260px; font-size:12px; font-family:monospace; padding:8px; border-radius:8px; border:1px solid var(--border-soft); background:#020617; color:var(--text-main);"
